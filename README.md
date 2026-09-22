@@ -32,6 +32,11 @@ engine is local arithmetic and never calls anything.
 With a key, a photo becomes a catalogued garment on its own, and outfits can ask
 for written styling notes. Add it under **Settings → Anthropic API key**.
 
+If the key belongs to your organisation rather than to a single workspace,
+also fill in **Workspace ID** — an unscoped key must name a workspace on every
+request (`anthropic-workspace-id`), and without it the API returns a 400. A key
+created inside a workspace carries that already and needs no ID.
+
 The key is kept in that browser's `localStorage`, on that device. It is not in
 this repository, not in the served HTML, and it is sent only to
 `api.anthropic.com`. Anyone else loading the page sees an empty field and gets
@@ -59,13 +64,10 @@ cross-origin reads the app keeps its own copy instead and samples the fabric
 colours itself; most do not permit it, and then the shop's stated colour is
 what gets used.
 
-The fetch uses the basic `web_fetch_20250910` tool deliberately. Later
-versions add dynamic filtering, which the API runs on the code execution tool
-— that provisions a container, which requires an API key scoped to a
-workspace, and an unscoped key gets a 400. Content is capped with
-`max_content_tokens` instead, which needs no container. If you want dynamic
-filtering back, create a workspace-scoped key in the Console and move the tool
-version up.
+The fetch uses the basic `web_fetch_20250910` tool. Later versions add dynamic
+filtering, which would cut the token cost of a large product page; content is
+capped with `max_content_tokens` instead. Product metadata sits in the
+document head, so truncation does not lose it.
 
 Web fetch does not render JavaScript. Most retailers still server-render their
 Open Graph and JSON-LD product metadata for search engines, which is where the

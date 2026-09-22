@@ -703,10 +703,19 @@ const store = {
 const SDK_URL = 'https://cdn.jsdelivr.net/npm/@anthropic-ai/sdk@0.127.0/+esm';
 const MODEL = 'claude-opus-5';
 const KEY_STORE = 'hangerlogic.apiKey';
+const WS_STORE = 'hangerlogic.workspaceId';
 let _client = null, _ns = null, _sdkFailed = false;
 function apiKey(){ try{ return localStorage.getItem(KEY_STORE) || ''; }catch(_){ return ''; } }
 function setApiKey(v){
   try{ v ? localStorage.setItem(KEY_STORE, v) : localStorage.removeItem(KEY_STORE); }catch(_){}
+  _client = null;
+}
+/* An organisation-level key is not tied to a workspace, and every request with
+   one must name the workspace in a header. A workspace-scoped key needs none
+   of this, which is why the field is optional. */
+function workspaceId(){ try{ return localStorage.getItem(WS_STORE) || ''; }catch(_){ return ''; } }
+function setWorkspaceId(v){
+  try{ v ? localStorage.setItem(WS_STORE, v) : localStorage.removeItem(WS_STORE); }catch(_){}
   _client = null;
 }
 async function getClient(){
@@ -715,7 +724,10 @@ async function getClient(){
   try{
     const mod = await import(SDK_URL);
     _ns = mod.default;
-    _client = new mod.default({ apiKey: apiKey(), dangerouslyAllowBrowser: true });
+    const opts = { apiKey: apiKey(), dangerouslyAllowBrowser: true };
+    const ws = workspaceId();
+    if(ws) opts.defaultHeaders = { 'anthropic-workspace-id': ws };
+    _client = new mod.default(opts);
     return _client;
   }catch(_){
     _sdkFailed = true;
@@ -902,7 +914,13 @@ function apiErrorCopy(e){
     if(e instanceof _ns.AuthenticationError) return 'That API key was rejected. Check it in Settings.';
     if(e instanceof _ns.PermissionDeniedError) return 'That key is not allowed to use this model.';
     if(e instanceof _ns.RateLimitError) return 'Rate limited. Wait a moment, then tap Read again.';
-    if(e instanceof _ns.BadRequestError) return 'The API rejected the request. '+apiMessage(e).slice(0,400);
+    if(e instanceof _ns.BadRequestError){
+      const msg = apiMessage(e);
+      if(/not scoped to a workspace/i.test(msg)){
+        return 'This key belongs to your organisation rather than to one workspace, so every request has to name a workspace. Open Settings and fill in the Workspace ID, or make a workspace-scoped key in the Console and use that instead.';
+      }
+      return 'The API rejected the request. '+msg.slice(0,400);
+    }
     if(e instanceof _ns.APIConnectionError) return 'Could not reach the API. Check your connection.';
     if(e instanceof _ns.APIError) return 'The API returned an error ('+(e.status||'?')+'). Try again shortly.';
   }
@@ -1551,11 +1569,13 @@ function openSettings(){
   +   '<p class="note">With a key, a photo becomes a catalogued garment: cut, dressiness, season and colours read off the fabric. Without one, the app reads colours on the device and you pick the rest — every outfit is still scored.</p>'
   +   '<div class="field"><label for="f-key">Anthropic API key</label>'
   +     '<input type="password" id="f-key" placeholder="'+(connected?'•••• stored on this device':'sk-ant-…')+'" autocomplete="off" spellcheck="false"></div>'
+  +   '<div class="field"><label for="f-ws">Workspace ID <span style="text-transform:none;letter-spacing:0">(only if your key is not workspace-scoped)</span></label>'
+  +     '<input type="text" id="f-ws" value="'+esc(workspaceId())+'" placeholder="wrkspc_…" autocomplete="off" spellcheck="false" autocapitalize="off"></div>'
   +   '<div class="row">'
-  +     '<button class="btn primary sm" data-savekey>Save key</button>'
+  +     '<button class="btn primary sm" data-savekey>Save</button>'
   +     (connected? '<button class="btn ghost sm" data-clearkey>Disconnect</button>':'')
   +   '</div>'
-  +   '<p class="keyline">The key is stored only in this browser on this device. It is not in the app\'s source, never leaves the phone except to api.anthropic.com, and clearing site data removes it. Reading one garment with '+esc(MODEL)+' costs roughly two cents.</p>'
+  +   '<p class="keyline">The key is stored only in this browser on this device. It is not in the app\'s source, never leaves the phone except to api.anthropic.com, and clearing site data removes it. Reading one garment with '+esc(MODEL)+' costs roughly two cents. A workspace ID is only needed for an organisation-level key; keys made inside a workspace carry it already.</p>'
   + '</div>'
   + '<div class="panel">'
   +   '<div class="eyebrow">Your wardrobe</div>'
@@ -1579,13 +1599,15 @@ function openSettings(){
   const root = document.getElementById('sheet-root');
   root.querySelector('[data-savekey]').addEventListener('click', ()=>{
     const v = keyInput.value.trim();
-    if(!v) return;
-    setApiKey(v); _sdkFailed = false;
+    const ws = (document.getElementById('f-ws').value || '').trim();
+    setWorkspaceId(ws);
+    if(v) setApiKey(v);
+    _sdkFailed = false;
     closeSheet(); render();
     if(state.view==='add') renderAdd();
   });
   const clear = root.querySelector('[data-clearkey]');
-  if(clear) clear.addEventListener('click', ()=>{ setApiKey(''); closeSheet(); render(); if(state.view==='add') renderAdd(); });
+  if(clear) clear.addEventListener('click', ()=>{ setApiKey(''); setWorkspaceId(''); closeSheet(); render(); if(state.view==='add') renderAdd(); });
   root.querySelector('[data-export]').addEventListener('click', exportBackup);
   const wipe = root.querySelector('[data-wipe]');
   if(wipe) wipe.addEventListener('click', ()=>confirmAction({
