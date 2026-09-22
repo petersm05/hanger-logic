@@ -59,6 +59,18 @@ cross-origin reads the app keeps its own copy instead and samples the fabric
 colours itself; most do not permit it, and then the shop's stated colour is
 what gets used.
 
+The fetch uses the basic `web_fetch_20250910` tool deliberately. Later
+versions add dynamic filtering, which the API runs on the code execution tool
+— that provisions a container, which requires an API key scoped to a
+workspace, and an unscoped key gets a 400. Content is capped with
+`max_content_tokens` instead, which needs no container. If you want dynamic
+filtering back, create a workspace-scoped key in the Console and move the tool
+version up.
+
+Web fetch does not render JavaScript. Most retailers still server-render their
+Open Graph and JSON-LD product metadata for search engines, which is where the
+colour, title and image come from, so this usually works anyway.
+
 Not every shop cooperates — some refuse anything that is not a browser. When
 that happens the app says so, and saving the product photo and adding it as a
 normal picture always works.
