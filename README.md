@@ -41,6 +41,28 @@ move the call behind a small proxy (a Cloudflare Worker will do) and point
 
 Requests use `claude-opus-5` at `effort: "low"` — roughly two cents per garment.
 
+## Adding from a shop link
+
+With a key connected, **Add → Add from a shop link** takes a product URL from
+Zalando, AboutYou, Wehkamp or anywhere else. Claude's server-side web fetch
+reads the page and returns the garment already catalogued — and because the
+retailer states the colour, material and category outright, that data is
+usually better than anything read off a photograph.
+
+The browser itself cannot fetch another site (cross-origin requests to a shop
+are blocked, and no amount of client-side code changes that), which is why this
+path goes through Claude rather than through `fetch()`.
+
+The product photo is hotlinked from the retailer's CDN, so it needs a
+connection to display and will break if they remove it. Where the CDN permits
+cross-origin reads the app keeps its own copy instead and samples the fabric
+colours itself; most do not permit it, and then the shop's stated colour is
+what gets used.
+
+Not every shop cooperates — some refuse anything that is not a browser. When
+that happens the app says so, and saving the product photo and adding it as a
+normal picture always works.
+
 ## How the scoring works
 
 Every pair of pieces is scored out of 100:

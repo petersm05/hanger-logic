@@ -227,6 +227,7 @@ p{margin:0}
 .gear{border:1px solid var(--line-2);background:var(--surface);border-radius:999px;width:30px;height:30px;
   display:grid;place-items:center;flex:0 0 auto;color:var(--ink-2)}
 .topbar .right{display:flex;align-items:center;gap:9px}
+.note a,.keyline a{color:var(--accent)}
 .keyline{font-size:12px;color:var(--ink-3);word-break:break-all}
 .setrow{display:flex;justify-content:space-between;gap:12px;align-items:center;padding:11px 0;border-bottom:1px solid var(--line)}
 .setrow:last-child{border-bottom:0}
@@ -754,6 +755,83 @@ const ANALYSIS_PROMPT = [
 '- styleTags: from minimal, classic, preppy, streetwear, workwear, sporty, romantic, edgy, bohemian, tailored, retro'
 ].join('\n');
 
+function hostOf(u){ try{ return new URL(u).hostname.replace(/^www\./,''); }catch(_){ return 'the shop'; } }
+/* The reply is read tolerantly rather than through output_config.format: a
+   server tool plus a strict schema is a combination I could not verify, and a
+   drifting reply should degrade, not 400. */
+function looseJson(text){
+  if(!text) return null;
+  const fence = text.match(/```(?:json)?\s*([\s\S]*?)```/);
+  const body = fence ? fence[1] : text;
+  const a = body.indexOf('{'), b = body.lastIndexOf('}');
+  if(a<0 || b<=a) return null;
+  try{ return JSON.parse(body.slice(a, b+1)); }catch(_){ return null; }
+}
+const LINK_PROMPT_TAIL = [
+'',
+'Read the page itself. The retailer states the colour, material and category, so prefer what they say over your own reading of the photograph.',
+'',
+'Reply with ONLY a JSON object — no prose around it, no code fence:',
+'{"name":"Olive chore jacket","category":"outerwear","subtype":"chore jacket","colors":[{"name":"olive drab","hex":"#5A5D3E"}],"pattern":"solid","formality":2,"seasons":["spring","autumn"],"styleTags":["workwear","classic"],"material":"cotton twill","note":"Boxy cut; sits over a knit.","imageUrl":"https://…","brand":"…"}',
+'',
+'- category: exactly one of ' + CAT_KEYS.join(', '),
+'- subtype: the specific garment in ordinary clothing vocabulary',
+'- name: 2-4 words including the colour; do not include the brand',
+'- colors: 1 to 3, most dominant first, hex matching the garment as shown',
+'- colors[].name: clothing colour vocabulary (ecru, oxblood, olive drab, camel, indigo, charcoal, sage)',
+'- pattern: solid | subtle | bold',
+'- formality: 1 loungewear, 2 casual, 3 smart casual, 4 business, 5 formal',
+'- seasons: any of spring, summer, autumn, winter — judge by weight and fabric',
+'- styleTags: 2 to 4 of minimal, classic, preppy, streetwear, workwear, sporty, romantic, edgy, bohemian, tailored, retro',
+'- imageUrl: the largest product photograph on the page, as an absolute https URL',
+'- If the page will not load, or sells no single garment, reply exactly {"error":"a short reason"}'
+].join('\n');
+
+async function fetchGarmentFromUrl(url){
+  const client = await getClient();
+  if(!client) throw {code:'no_client'};
+  let messages = [{ role:'user', content:'Fetch this product page and catalogue the garment it sells, for a personal wardrobe app:\n\n' + url + LINK_PROMPT_TAIL }];
+  let res = null;
+  for(let round=0; round<3; round++){
+    res = await client.messages.create({
+      model: MODEL,
+      max_tokens: 3000,
+      output_config: { effort:'low' },
+      tools: [{ type:'web_fetch_20260209', name:'web_fetch', max_uses:3, max_content_tokens:12000 }],
+      messages
+    });
+    if(res.stop_reason !== 'pause_turn') break;
+    messages = messages.concat([{ role:'assistant', content: res.content }]);
+  }
+  if(res.stop_reason === 'refusal') throw {code:'refused'};
+  const text = res.content.filter(b=>b.type==='text').map(b=>b.text).join('\n');
+  const data = looseJson(text);
+  if(!data) throw {code:'bad_json'};
+  if(data.error) throw {code:'page', message:String(data.error).slice(0,160)};
+  const item = normaliseItem(data);
+  item.imageUrl = (typeof data.imageUrl==='string' && /^https:\/\//i.test(data.imageUrl)) ? data.imageUrl : null;
+  item.sourceUrl = url;
+  return item;
+}
+/* If the retailer's CDN allows cross-origin reads we can keep our own copy and
+   sample the fabric ourselves. Most will not, and then we simply hotlink. */
+async function tryLocalCopy(url){
+  try{
+    const img = await new Promise((res,rej)=>{
+      const i = new Image();
+      i.crossOrigin = 'anonymous';
+      i.referrerPolicy = 'no-referrer';
+      i.onload = ()=>res(i);
+      i.onerror = ()=>rej(new Error('cors'));
+      i.src = url;
+    });
+    const full = await canvasToBlob(drawTo(img, 1400), 0.85);
+    const thumb = drawTo(img, 360).toDataURL('image/jpeg', 0.62);
+    const colors = extractColors(img, 3);
+    return full ? {full, thumb, colors} : null;
+  }catch(_){ return null; }
+}
+
 function blobToBase64(blob){
   return new Promise((res,rej)=>{
     const r = new FileReader();
@@ -805,7 +883,8 @@ async function stylingNotes(pieces, onText){
 function apiErrorCopy(e){
   if(e && e.code === 'no_client') return 'Claude is not connected. Open Settings to add your API key, or fill the piece in by hand.';
   if(e && e.code === 'refused') return 'Claude would not read that photo. Try a different shot of the garment.';
-  if(e && e.code === 'bad_json') return 'The reply came back unreadable. Tap Read again.';
+  if(e && e.code === 'bad_json') return 'The reply came back unreadable. Try again.';
+  if(e && e.code === 'page') return 'That page could not be catalogued: '+(e.message||'')+' Some shops block anything that is not a browser — saving the product photo and adding it here always works.';
   if(_ns){
     if(e instanceof _ns.AuthenticationError) return 'That API key was rejected. Check it in Settings.';
     if(e instanceof _ns.PermissionDeniedError) return 'That key is not allowed to use this model.';
@@ -848,7 +927,7 @@ const EXAMPLES = [
 /* ---------------------------------------------------------------- pieces of UI */
 function thumbInner(item){
   const src = imageSrc(item);
-  if(src) return '<img src="'+esc(src)+'" alt="'+esc(item.name)+'" loading="lazy">';
+  if(src) return '<img src="'+esc(src)+'" alt="'+esc(item.name)+'" loading="lazy" referrerpolicy="no-referrer">';
   const cols = (item.colors||[]).slice(0,2);
   return '<span class="blocks">'+cols.map(c=>'<span style="background:'+esc(c.hex)+'"></span>').join('')+'</span>';
 }
@@ -1061,6 +1140,7 @@ function openItemSheet(item){
     +   '<dt>Pattern</dt><dd>'+esc(item.pattern)+'</dd>'
     +   '<dt>Season</dt><dd>'+esc(fmtList(item.seasons))+'</dd>'
     +   (item.material? '<dt>Material</dt><dd>'+esc(item.material)+'</dd>':'')
+    +   (item.sourceUrl? '<dt>From</dt><dd><a href="'+esc(item.sourceUrl)+'" target="_blank" rel="noopener noreferrer">'+esc(hostOf(item.sourceUrl))+'</a></dd>':'')
     + '</dl></div>'
     + '<div class="sect" style="margin:0"><div><div class="eyebrow">What it goes with</div>'
     + '<p class="note" style="margin-top:4px">Scored against everything else on the rail.</p></div>'
@@ -1120,7 +1200,7 @@ function liveItems(){ return state.items.length ? state.items : (examplesHidden(
 function usingExamples(){ return state.items.length===0 && !examplesHidden(); }
 function itemById(id){ return liveItems().find(i=>i.id===id); }
 function hasClaude(){ return !!apiKey() && !_sdkFailed; }
-function imageSrc(item){ return item.thumb || null; }
+function imageSrc(item){ return item.thumb || item.imageUrl || null; }
 
 function normaliseItem(raw){
   const r = raw || {};
@@ -1146,6 +1226,8 @@ function normaliseItem(raw){
     material: String(r.material||'').slice(0,30),
     note: String(r.note||'').slice(0,200),
     thumb: typeof r.thumb==='string' && r.thumb.length<80000 ? r.thumb : null,
+    imageUrl: typeof r.imageUrl==='string' && /^https:\/\//i.test(r.imageUrl) ? r.imageUrl : null,
+    sourceUrl: typeof r.sourceUrl==='string' && /^https?:\/\//i.test(r.sourceUrl) ? r.sourceUrl : null,
     hasPhoto: !!r.hasPhoto,
     addedAt: Number(r.addedAt)||Date.now(),
     example: false
@@ -1205,34 +1287,56 @@ async function prepareImage(file){
 }
 
 /* ---------------------------------------------------------------- add flow */
-const add = {prep:null, draft:null, busy:false, status:'', error:'', formBuilt:false};
+const add = {prep:null, draft:null, busy:false, status:'', error:'', formBuilt:false, mode:'idle', linkImage:null, sourceUrl:null};
 function blankDraft(colors){
   return {id:uid(), name:'', category:'top', subtype:'',
           colors: (colors && colors.length) ? colors.slice(0,2) : [{name:'',hex:'#8a8f86'}],
           pattern:'solid', formality:3, seasons:SEASONS.slice(), styleTags:[], material:'', note:''};
 }
-function resetAdd(){ add.prep=null; add.draft=null; add.busy=false; add.status=''; add.error=''; add.formBuilt=false; }
+function resetAdd(){ add.prep=null; add.draft=null; add.busy=false; add.status=''; add.error=''; add.formBuilt=false; add.mode='idle'; add.linkImage=null; add.sourceUrl=null; }
 
 function renderAdd(){
   const slot = document.getElementById('add-slot');
   const acc = 'image/jpeg,image/png,image/webp';
-  const previewHTML = add.prep
-    ? '<div class="hero" style="aspect-ratio:4/3"><img src="'+esc(add.prep.thumb)+'" alt="The photo you just took"></div>' : '';
+  const previewSrc = add.prep ? add.prep.thumb : add.linkImage;
+  const previewHTML = previewSrc
+    ? '<div class="hero" style="aspect-ratio:4/3"><img src="'+esc(previewSrc)+'" alt="The garment" referrerpolicy="no-referrer"></div>'
+      + (add.sourceUrl ? '<p class="note" style="margin-top:-4px">From <a href="'+esc(add.sourceUrl)+'" target="_blank" rel="noopener noreferrer">'+esc(hostOf(add.sourceUrl))+'</a></p>' : '')
+    : '';
   const notices = [];
   if(!hasClaude()) notices.push('<div class="banner">Colours are read on the device. Connect Claude in <b>Settings</b> and it will also name the cut and rate how dressy each piece is.</div>');
   if(add.error) notices.push('<div class="banner warn">'+esc(add.error)+'</div>');
 
-  if(!add.prep && !add.draft){
+  if(add.mode==='link' && !add.draft && !add.busy){
+    slot.innerHTML = notices.join('')
+      + '<div class="panel">'
+      + '<div class="field"><label for="f-url">Product link</label>'
+      +   '<input type="url" id="f-url" inputmode="url" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="https://www.zalando.nl/…"></div>'
+      + '<div class="row"><button class="btn primary sm" data-fetchurl>Read the page</button>'
+      +   '<button class="btn ghost sm" data-backtoidle>Back</button></div>'
+      + '<p class="note">Claude opens the page and reads what the shop says about the garment — colour, material, how dressy. Some shops refuse anything that is not a browser; if this one does, save the product photo and add it that way.</p>'
+      + '</div>';
+    add.formBuilt = false;
+    const go = ()=>{ const v=document.getElementById('f-url').value.trim(); if(v) onLink(v); };
+    slot.querySelector('[data-fetchurl]').addEventListener('click', go);
+    slot.querySelector('[data-backtoidle]').addEventListener('click', ()=>{ add.mode='idle'; add.error=''; renderAdd(); });
+    document.getElementById('f-url').addEventListener('keydown', e=>{ if(e.key==='Enter'){ e.preventDefault(); go(); } });
+    return;
+  }
+  if(!add.prep && !add.draft && !add.linkImage){
     slot.innerHTML = notices.join('')
       + '<div class="panel">'
       + '<div class="row"><button class="btn primary" data-pick="cam">Take a photo</button>'
       + '<button class="btn" data-pick="lib">Choose a photo</button></div>'
+      + (hasClaude() ? '<div class="row"><button class="btn" data-linkmode>Add from a shop link</button></div>' : '')
       + '<button class="btn ghost sm" data-manual style="align-self:flex-start">Add without a photo</button>'
       + '</div>'
       + '<input type="file" id="pick-cam" accept="'+acc+'" capture="environment" hidden>'
       + '<input type="file" id="pick-lib" accept="'+acc+'" hidden>';
     add.formBuilt = false;
     wireAddPickers();
+    const lm = slot.querySelector('[data-linkmode]');
+    if(lm) lm.addEventListener('click', ()=>{ add.mode='link'; add.error=''; renderAdd(); });
     return;
   }
   if(add.busy){
@@ -1275,7 +1379,8 @@ function renderAdd(){
     + '<div class="row" style="justify-content:space-between">'
     +   '<button type="button" class="btn ghost sm" data-cancel>Discard</button>'
     +   '<div class="row">'
-    +     (add.prep && hasClaude() ? '<button type="button" class="btn sm" data-reread>Read again</button>':'')
+    +     (add.sourceUrl && hasClaude() ? '<button type="button" class="btn sm" data-refetch>Read the page again</button>'
+            : add.prep && hasClaude() ? '<button type="button" class="btn sm" data-reread>Read again</button>':'')
     +     '<button type="submit" class="btn primary">Hang it up</button>'
     +   '</div>'
     + '</div></form>';
@@ -1323,6 +1428,8 @@ function wireForm(){
   if(cancel) cancel.addEventListener('click', ()=>{ resetAdd(); renderAdd(); });
   const reread = form.querySelector('[data-reread]');
   if(reread) reread.addEventListener('click', ()=>reanalyse());
+  const refetch = form.querySelector('[data-refetch]');
+  if(refetch) refetch.addEventListener('click', ()=>onLink(add.sourceUrl));
   form.addEventListener('submit', e=>{ e.preventDefault(); commitDraft(); });
 }
 async function onFile(file){
@@ -1345,6 +1452,30 @@ async function onFile(file){
   }
   add.busy=false; add.status=''; renderAdd();
 }
+async function onLink(url){
+  if(!/^https?:\/\//i.test(url)) url = 'https://' + url.replace(/^\/+/,'');
+  add.error=''; add.busy=true; add.mode='link'; add.status='Reading the product page'; renderAdd();
+  let got = null;
+  try{
+    got = await fetchGarmentFromUrl(url);
+  }catch(e){
+    add.error = apiErrorCopy(e);
+    add.busy=false; add.status='';
+    if(!add.draft) add.mode='link';
+    renderAdd();
+    return;
+  }
+  add.sourceUrl = got.sourceUrl || url;
+  add.linkImage = got.imageUrl || null;
+  if(got.imageUrl){
+    add.status='Fetching the photo'; renderAdd();
+    const local = await tryLocalCopy(got.imageUrl);
+    if(local){ add.prep = local; }        // the CDN allowed it: keep our own copy
+  }
+  add.draft = got;
+  add.busy=false; add.status='';
+  renderAdd();
+}
 async function reanalyse(){
   if(!add.prep) return;
   const id = add.draft ? add.draft.id : uid();
@@ -1360,6 +1491,8 @@ async function commitDraft(){
   const item = normaliseItem(Object.assign({}, d, {id: d.id||uid(), addedAt: Date.now()}));
   if(!item.name.trim()) item.name = cap1(item.colors[0].name||'New')+' '+(item.subtype||CAT_LABEL[item.category]).toLowerCase();
   if(add.prep){ item.thumb = add.prep.thumb; item.hasPhoto = true; }
+  else if(add.linkImage){ item.imageUrl = add.linkImage; }
+  if(add.sourceUrl) item.sourceUrl = add.sourceUrl;
   try{
     await saveItem(item, add.prep ? add.prep.full : null);
     resetAdd();
