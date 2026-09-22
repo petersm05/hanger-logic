@@ -1,5 +1,5 @@
 /* Offline shell. Bump CACHE on every deploy so clients pick the new build up. */
-const CACHE = 'hanger-logic-v1';
+const CACHE = 'hanger-logic-v2';
 const SHELL = [
   './', './index.html', './manifest.webmanifest',
   './icon-192.png', './icon-512.png', './apple-touch-icon.png'

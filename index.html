@@ -176,6 +176,12 @@ p{margin:0}
 .sheet-head{flex:0 0 auto;display:flex;align-items:center;justify-content:space-between;gap:10px;padding:12px 14px;
   padding-top:calc(12px + env(safe-area-inset-top,0px));border-bottom:1px solid var(--line);background:var(--surface)}
 .sheet-title{font-family:var(--serif);font-size:19px;line-height:1.15;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.confirmbar{position:absolute;left:0;right:0;bottom:0;z-index:5;background:var(--surface);
+  border-top:1px solid var(--line);padding:14px 16px calc(14px + env(safe-area-inset-bottom,0px));
+  display:flex;flex-direction:column;gap:11px;box-shadow:0 -10px 30px rgba(0,0,0,.18)}
+.confirmbar .row{justify-content:flex-end}
+.scrim{position:absolute;inset:0;z-index:4;background:rgba(0,0,0,.3)}
+.btn.danger{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
 .sheet-body>*{flex-shrink:0}
 .sheet-body{flex:1 1 auto;overflow-y:auto;padding:16px 16px calc(28px + env(safe-area-inset-bottom,0px));display:flex;flex-direction:column;gap:18px}
 .iconbtn{border:1px solid var(--line-2);background:var(--surface);border-radius:50%;width:34px;height:34px;display:grid;place-items:center;flex:0 0 auto}
@@ -901,8 +907,9 @@ function renderWardrobe(){
   const items = liveItems();
   const banners = document.getElementById('wardrobe-banners');
   const msgs = [];
-  if(usingExamples()) msgs.push('<div class="banner">These eight pieces are <b>examples</b>, here so the pairing engine has something to chew on. Add your first real garment and they disappear.</div>');
-  else if(!state.persisted) msgs.push('<div class="banner warn">This view cannot save to the wardrobe store, so anything you add lasts only until you close the page.</div>');
+  if(usingExamples()) msgs.push('<div class="banner">These eight pieces are <b>examples</b>, here so the pairing engine has something to chew on. They vanish when you add your first real garment.'
+    + '<div style="margin-top:10px"><button class="btn ghost sm" data-hide-examples>Hide them now</button></div></div>');
+  else if(!state.storageOk) msgs.push('<div class="banner warn">This browser is blocking local storage, so pieces you add will not survive closing the app. Private browsing usually causes this.</div>');
   banners.innerHTML = msgs.length ? '<div class="sect">'+msgs.join('')+'</div>' : '';
 
   const present = CATS.filter(c=>items.some(i=>i.category===c.key));
@@ -996,15 +1003,36 @@ function renderOutfits(){
 
 /* ---------------------------------------------------------------- sheets */
 function closeSheet(){ document.getElementById('sheet-root').innerHTML=''; }
-function openSheet(title, bodyHTML){
+const TRASH_SVG = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16"/><path d="M10 11v6M14 11v6"/><path d="M6 7l1 13h10l1-13"/><path d="M9 7V4h6v3"/></svg>';
+function openSheet(title, bodyHTML, headExtra){
   const root = document.getElementById('sheet-root');
   root.innerHTML = '<div class="sheet" role="dialog" aria-modal="true">'
     + '<div class="sheet-head"><div class="sheet-title">'+title+'</div>'
+    + '<div class="row" style="flex-wrap:nowrap;gap:8px">'
+    + (headExtra||'')
     + '<button class="iconbtn" data-close aria-label="Close">'
     + '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg>'
-    + '</button></div>'
+    + '</button></div></div>'
     + '<div class="sheet-body">'+bodyHTML+'</div></div>';
   root.querySelector('[data-close]').focus();
+}
+/* Destructive actions get a bar over the sheet they were started from. */
+function confirmAction(opts){
+  const sheet = document.querySelector('#sheet-root .sheet');
+  if(!sheet){ opts.onConfirm(); return; }
+  sheet.querySelectorAll('.confirmbar,.scrim').forEach(n=>n.remove());
+  const scrim = el('<div class="scrim"></div>');
+  const bar = el('<div class="confirmbar">'
+    + '<div><div class="card-name">'+esc(opts.title)+'</div>'
+    + '<p class="note" style="margin-top:3px">'+esc(opts.body)+'</p></div>'
+    + '<div class="row"><button class="btn ghost sm" data-cancel-confirm>Cancel</button>'
+    + '<button class="btn danger sm" data-do-confirm>'+esc(opts.verb)+'</button></div></div>');
+  const dismiss = ()=>{ scrim.remove(); bar.remove(); };
+  scrim.addEventListener('click', dismiss);
+  bar.querySelector('[data-cancel-confirm]').addEventListener('click', dismiss);
+  bar.querySelector('[data-do-confirm]').addEventListener('click', ()=>{ dismiss(); opts.onConfirm(); });
+  sheet.append(scrim, bar);
+  bar.querySelector('[data-do-confirm]').focus();
 }
 function openItemSheet(item){
   const others = liveItems();
@@ -1037,9 +1065,10 @@ function openItemSheet(item){
     + '<div class="sect" style="margin:0"><div><div class="eyebrow">What it goes with</div>'
     + '<p class="note" style="margin-top:4px">Scored against everything else on the rail.</p></div>'
     + pairsHTML + '</div>'
-    + (item.example? '<p class="note">This is one of the example pieces — add your own and it makes way.</p>'
-       : '<div class="row"><button class="btn ghost" data-delete="'+esc(item.id)+'">Remove from wardrobe</button></div>');
-  openSheet(esc(item.name), body);
+    + (item.example? '<p class="note">This is one of the example pieces — add your own and it makes way.</p>' : '');
+  const headExtra = item.example ? ''
+    : '<button class="iconbtn" data-delete="'+esc(item.id)+'" aria-label="Remove from wardrobe">'+TRASH_SVG+'</button>';
+  openSheet(esc(item.name), body, headExtra);
 }
 function openPairSheet(a,b){
   const p = pairScore(a,b);
@@ -1083,9 +1112,12 @@ function openWhySheet(look){
 
 
 /* ---------------------------------------------------------------- state */
-const state = { view:'wardrobe', filter:'all', occasion:'any', items:[], notes:{}, ready:false };
-function liveItems(){ return state.items.length ? state.items : EXAMPLES; }
-function usingExamples(){ return state.items.length===0; }
+const state = { view:'wardrobe', filter:'all', occasion:'any', items:[], notes:{}, ready:false, storageOk:true };
+const HIDE_EX = 'hangerlogic.hideExamples';
+function examplesHidden(){ try{ return localStorage.getItem(HIDE_EX)==='1'; }catch(_){ return false; } }
+function setExamplesHidden(v){ try{ v? localStorage.setItem(HIDE_EX,'1') : localStorage.removeItem(HIDE_EX); }catch(_){} }
+function liveItems(){ return state.items.length ? state.items : (examplesHidden()? [] : EXAMPLES); }
+function usingExamples(){ return state.items.length===0 && !examplesHidden(); }
 function itemById(id){ return liveItems().find(i=>i.id===id); }
 function hasClaude(){ return !!apiKey() && !_sdkFailed; }
 function imageSrc(item){ return item.thumb || null; }
@@ -1123,7 +1155,8 @@ async function loadItems(){
   try{
     const rows = await store.allItems();
     state.items = (rows||[]).map(normaliseItem).sort((a,b)=>b.addedAt-a.addedAt);
-  }catch(_){ state.items = []; }
+    state.storageOk = true;
+  }catch(_){ state.items = []; state.storageOk = false; }
   state.ready = true;
 }
 async function saveItem(item, blob){
@@ -1385,6 +1418,10 @@ function openSettings(){
   +     '<button class="btn sm" data-export>Export</button></div>'
   +   '<div class="setrow"><div class="lhs"><b>Restore a backup</b><span>Adds to what is already here.</span></div>'
   +     '<button class="btn sm" data-import>Import</button></div>'
+  +   (n ? '<div class="setrow"><div class="lhs"><b>Delete everything</b><span>Every piece and photo on this device. Your key is kept.</span></div>'
+  +        '<button class="btn sm" data-wipe>Delete</button></div>' : '')
+  +   (!n && examplesHidden() ? '<div class="setrow"><div class="lhs"><b>Show the examples again</b><span>The eight demo garments come back while the wardrobe is empty.</span></div>'
+  +        '<button class="btn sm" data-show-examples>Show</button></div>' : '')
   +   '<input type="file" id="pick-backup" accept="application/json" hidden>'
   + '</div>'
   + '<div class="panel">'
@@ -1404,11 +1441,28 @@ function openSettings(){
   const clear = root.querySelector('[data-clearkey]');
   if(clear) clear.addEventListener('click', ()=>{ setApiKey(''); closeSheet(); render(); if(state.view==='add') renderAdd(); });
   root.querySelector('[data-export]').addEventListener('click', exportBackup);
+  const wipe = root.querySelector('[data-wipe]');
+  if(wipe) wipe.addEventListener('click', ()=>confirmAction({
+    title:'Delete the whole wardrobe?',
+    body: state.items.length+' piece'+(state.items.length===1?'':'s')+' and every photo are removed from this device. An exported backup is the only way back.',
+    verb:'Delete everything',
+    onConfirm: wipeAll
+  }));
+  const showEx = root.querySelector('[data-show-examples]');
+  if(showEx) showEx.addEventListener('click', ()=>{ setExamplesHidden(false); closeSheet(); render(); });
   root.querySelector('[data-import]').addEventListener('click', ()=>document.getElementById('pick-backup').click());
   document.getElementById('pick-backup').addEventListener('change', e=>{
     const f = e.target.files && e.target.files[0];
     if(f) importBackup(f);
   });
+}
+async function wipeAll(){
+  for(const it of state.items.slice()){
+    try{ await store.delItem(it.id); await store.delPhoto(it.id); }catch(_){}
+  }
+  await loadItems();
+  closeSheet();
+  setView('wardrobe');
 }
 async function exportBackup(){
   const btn = document.querySelector('[data-export]');
@@ -1495,8 +1549,9 @@ async function upgradeHero(item){
   }catch(_){}
 }
 document.addEventListener('click', e=>{
-  const t = e.target.closest('[data-view],[data-cat],[data-occ],[data-go],[data-item],[data-why],[data-notes],[data-pair],[data-close],[data-delete],#open-settings');
+  const t = e.target.closest('[data-view],[data-cat],[data-occ],[data-go],[data-item],[data-why],[data-notes],[data-pair],[data-close],[data-delete],[data-hide-examples],#open-settings');
   if(!t) return;
+  if(t.hasAttribute('data-hide-examples')){ setExamplesHidden(true); render(); return; }
   if(t.id==='open-settings'){ openSettings(); return; }
   if(t.dataset.view){ setView(t.dataset.view); return; }
   if(t.dataset.go){ setView(t.dataset.go); return; }
@@ -1514,7 +1569,12 @@ document.addEventListener('click', e=>{
   if(t.dataset.notes){ askNotes(t.dataset.notes); return; }
   if(t.dataset.delete){
     const it = itemById(t.dataset.delete);
-    if(it){ removeItem(it); closeSheet(); }
+    if(it) confirmAction({
+      title:'Remove '+it.name+'?',
+      body:'The piece and its photo are deleted from this device. An exported backup is the only way back.',
+      verb:'Remove',
+      onConfirm:()=>{ removeItem(it); closeSheet(); }
+    });
     return;
   }
 });
